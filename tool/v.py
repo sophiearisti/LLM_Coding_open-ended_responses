@@ -64,6 +64,10 @@ def seleccionar_llm_st():
 
     return None
 
+# 2. Definimos la función que pone la variable en False
+def desactivar_algo():
+    st.session_state.proceso_finalizado = False
+    
 def input_prompt_component(label, help_text, example_text, esta_bloqueado):
     # We create a visual container for each section
     with st.container(border=True):
@@ -77,10 +81,6 @@ def input_prompt_component(label, help_text, example_text, esta_bloqueado):
             with st.popover("💡 HELP"):
                 st.markdown(f"**Example of {label}:**")
                 st.caption(example_text) # More legible text for examples
-
-        # 2. Definimos la función que pone la variable en False
-        def desactivar_algo():
-            st.session_state.proceso_finalizado = False
 
         # 3. Pasamos la función al radio button
         method = st.radio(
@@ -112,6 +112,117 @@ def input_prompt_component(label, help_text, example_text, esta_bloqueado):
                 return file.read().decode("utf-8")
     return ""
 
+def input_prompt_format_component(label, help_text, example_text, esta_bloqueado, type):
+    # We create a visual container for each section
+    with st.container(border=True):
+        col_tit, col_help, col_warning = st.columns([0.5, 0.2, 0.3])
+        
+        with col_tit:
+            st.markdown(f"### {label}")
+            
+        with col_help:
+            # We replace the button/info with a Popover (floating window)
+            with st.popover("💡 HELP"):
+                st.markdown(f"**Example of {label}:**")
+                st.caption(example_text) # More legible text for examples
+                
+        with col_warning:
+            
+            with st.popover("⚠️ WARNING"):
+                st.markdown(f"**Warning for {label}:**")
+                st.caption("Make sure the structure is in a JSON format, otherwise it will cause errors.")
+
+
+        # 3. Pasamos la función al radio button
+        method = st.radio(
+            f"How would you like to enter the {label}?",
+            ["Write text", "Upload .txt file", "Pre-structured JSON"],
+            key=f"radio_{label}",
+            horizontal=True, 
+            disabled=esta_bloqueado,
+            on_change=desactivar_algo 
+        )
+        
+        if method == "Write text":
+            return st.text_area(
+                f"Enter the {label}:", 
+                placeholder=help_text, 
+                key=f"txt_{label}",
+                height=150, # Fixed height to prevent it from looking too small,
+                disabled = esta_bloqueado,
+                on_change=desactivar_algo 
+            )
+        elif method == "Upload .txt file":
+            file = st.file_uploader(
+                f"Upload the file for {label}", 
+                type="txt", 
+                key=f"file_{label}",
+                disabled = esta_bloqueado,
+                on_change=desactivar_algo 
+            )
+            if file:
+                return file.read().decode("utf-8")
+        elif method == "Pre-structured JSON":
+            # 1. Primer bloque de texto (Prefijo)
+            prefix = st.text_area("Initial Context (Text):", key=f"prefix_{label}", height=100, disabled = esta_bloqueado)
+
+            st.markdown("---")
+            st.write("🔧 **Data Structure**")
+
+            # 2. Inicialización con las 3 filas por defecto (A, B, C)
+            key_rows = f"rows_{label}"
+            
+            if type == "create":
+                st.session_state[key_rows] = [
+                    {"key": "A", "value": "the category is A: <definition of the category>"},
+                    {"key": "B", "value": "the category is B: <definition of the category>"},
+                    {"key": "C", "value": "the category is C: <definition of the category>"}
+                ]
+            else:
+                st.session_state[key_rows] = [
+                    {"key": "A", "value": "0"},
+                    {"key": "B", "value": "1"},
+                    {"key": "C", "value": "1"}
+                ]
+            
+            # Contenedor para las categorías
+            for i, row in enumerate(st.session_state[key_rows]):
+                col1, col_eq, col2, col_btn = st.columns([0.2, 0.05, 0.65, 0.1]) # Ajusté los anchos para que la definición tenga más espacio
+                
+                with col1:
+                    st.session_state[key_rows][i]["key"] = st.text_input(
+                        f"Clave {i}", value=row["key"], label_visibility="collapsed", key=f"k_{label}_{i}", disabled = esta_bloqueado
+                    )
+                with col_eq:
+                    st.markdown("<h4 style='text-align: center; margin-top: 0;'> = </h4>", unsafe_allow_html=True)
+                with col2:
+                    st.session_state[key_rows][i]["value"] = st.text_input(
+                        f"Valor {i}", value=row["value"], label_visibility="collapsed", key=f"v_{label}_{i}", disabled = esta_bloqueado
+                    )
+                with col_btn:
+                    # El botón de eliminar funciona perfectamente si deciden quitar A, B o C
+                    if st.button("🗑️", key=f"del_{label}_{i}", disabled = esta_bloqueado):
+                        st.session_state[key_rows].pop(i)
+                        st.rerun()
+
+            
+            # Botón para agregar una nueva categoría (D, E, etc.)
+            if st.button("➕ Add Category", key=f"add_{label}", disabled = esta_bloqueado):
+                st.session_state[key_rows].append({"key": "", "value": ""})
+                st.rerun()
+
+            st.markdown("---")
+
+            # 3. Segundo bloque de texto (Sufijo)
+            suffix = st.text_area("Final Instructions (Text):", key=f"suffix_{label}", height=100, disabled = esta_bloqueado)
+
+            # Construcción interna del formato estructurado
+            json_part = {r["key"]: r["value"] for r in st.session_state[key_rows] if r["key"]}
+            full_content = f"{prefix}\n{json_part}\n{suffix}"
+            return full_content
+                           
+    return ""
+
 def menu_st(df, menu_type):
     
     estrategia = None
@@ -135,15 +246,11 @@ def menu_st(df, menu_type):
 
     if info_llm and API_KEY:
         # Always show pending batches, regardless of whether a file is uploaded
-        crear_prompt_obtener_resultados(info_llm, df, API_KEY, estrategia)
+        crear_prompt_obtener_resultados(info_llm, df, API_KEY, estrategia, menu_type)
         
         mostrar_estado_batches_st(API_KEY)
              
-def crear_prompt_obtener_resultados(info_llm, df, API_KEY, estrategia):
-    
-    # 1. Inicializar estados para persistencia
-    if 'proceso_finalizado' not in st.session_state:
-        st.session_state.proceso_finalizado = False
+def crear_prompt_obtener_resultados(info_llm, df, API_KEY, estrategia, menu_type):
         
     # Creamos una variable corta para no escribir tanto
     esta_bloqueado = st.session_state.proceso_finalizado # Si el proceso se ha marcado como finalizado, bloqueamos los inputs
@@ -154,9 +261,15 @@ def crear_prompt_obtener_resultados(info_llm, df, API_KEY, estrategia):
     # --- BLOQUES BÁSICOS ---
     rol = input_prompt_component("Role", "e.g., You are an economics expert...", HELP_ROLE, esta_bloqueado)
     contexto = input_prompt_component("Context", "e.g., This data comes from...", HELP_CONTEXTO, esta_bloqueado)
-    clasificacion = input_prompt_component("Classification", "e.g., Classify into A, B, or C...", HELP_CLASIFICACION, esta_bloqueado)
-    formato = input_prompt_component("Format", "e.g., Return a JSON...", HELP_FORMAT, esta_bloqueado)
-    constraints = input_prompt_component("Constraints", "e.g., Do not use adjectives...", HELP_CONSTRAINTS, esta_bloqueado)
+    
+    if menu_type == 2:
+        clasificacion = input_prompt_component("Classification", "e.g., Classify into A, B, or C...", HELP_CLASIFICACION, esta_bloqueado)
+        formato = input_prompt_format_component("Format", "e.g., Return a JSON...",  HELP_FORMAT, esta_bloqueado, type="classify")
+        constraints = input_prompt_component("Constraints", "e.g., Do not use adjectives...", HELP_CONSTRAINTS, esta_bloqueado)
+    else:
+        clasificacion = input_prompt_component("Create categories task", "e.g., Classify into A, B, or C...", HELP_CLASIFICACION_CAT, esta_bloqueado)
+        formato = input_prompt_format_component("Format", "e.g., Return a JSON...",  HELP_FORMAT_CAT, esta_bloqueado, type="create")
+        constraints = input_prompt_component("Constraints", "e.g., Do not use adjectives...", HELP_CONSTRAINTS, esta_bloqueado)
 
     extra_content = ""
 
@@ -237,79 +350,115 @@ def crear_prompt_obtener_resultados(info_llm, df, API_KEY, estrategia):
 
     modos_ejecucion = {}
 
+    # 1. Inicializamos o limpiamos los acumuladores en el estado de la sesión antes del bucle
+    st.session_state["batches_a_eliminar_acumulados"] = []
+    
+    # Banderas globales para controlar el checkbox de confirmación
+    al_menos_un_archivo_previo = False
+    al_menos_un_json_previo = False
+
     for temp in temps:
-        if not st.session_state.proceso_finalizado and esta_bloqueado == False:
-            if processing_mode == "Batch API (async, ~50% cheaper, up to 24 h)":
+        if esta_bloqueado == False:
+            if "Batch" in processing_mode:
                 
                 hay_archivos_previos, modos_ejecucion = verify_files_existence(proveedor, strategy_folder, temp, modos_ejecucion, batch_prefix="batch", esta_bloqueado=esta_bloqueado)
-                
-                #tambien para batch existence no solo es eso sino tambien pensar que hay batches que pueden estar procesando la misma informacion
-                #la idea es cogerel row map y evaluar si hay un solapamiento alto entre las filas del row map y el df actual, si es asi avisar que hay un batch en proceso que puede estar procesando la misma informacion y dar la opcion de mantener (esperar a que termine el batch) o eliminar (cancelar el batch y eliminar los archivos)
-                # si se quiere volver a correr, se borra el batch (si existe) y se eliminan los archivos, si se quiere mantener, se espera a que termine el batch y luego se evalua si el resultado es util o no para descargarlo o no
-                hay_archivos_previos_json, batches_a_eliminar = verify_files_existence_json(df, proveedor, message_col, esta_bloqueado)
+                if hay_archivos_previos:
+                    al_menos_un_archivo_previo = True
 
+                # Ejecutamos la verificación del JSON
+                hay_archivos_previos_json, batches_temp = verify_files_existence_json(df, proveedor, message_col, esta_bloqueado, temp)
+                if hay_archivos_previos_json:
+                    al_menos_un_json_previo = True
+                
+                # 🔴 ACUMULAMOS en lugar de sobrescribir
+                if batches_temp:
+                    st.session_state["batches_a_eliminar_acumulados"].extend(batches_temp)
+                    
+                print(f"Modos ejecución (Temp {temp}):", modos_ejecucion)
+                print(f"Batches detectados en esta temp:", batches_temp)
+            
             else:
-                
                 hay_archivos_previos, modos_ejecucion = verify_files_existence(proveedor, strategy_folder, temp, modos_ejecucion, batch_prefix="line", esta_bloqueado=esta_bloqueado)
-                
+                if hay_archivos_previos:
+                    al_menos_un_archivo_previo = True
+                    
                 hay_archivos_previos_json = False
-                batches_a_eliminar = None
         else:
-            hay_archivos_previos = False
-            hay_archivos_previos_json = False
+            # Si está bloqueado, no acumulamos nada
             modos_ejecucion = {}
-            batches_a_eliminar = None
     
     # --- VALIDACIÓN FINAL PARA MOSTRAR EL BOTÓN ---
+    # Usamos las variables globales que no se sobrescriben destructivamente
     confirmado = True
-    
-    if hay_archivos_previos or hay_archivos_previos_json:
-        # Añadimos un checkbox de confirmación final para "frenar" el proceso
+    if al_menos_un_archivo_previo or al_menos_un_json_previo:
         confirmado = st.checkbox("I confirm the file management actions above.", value=False, disabled=esta_bloqueado)
 
     # --- BOTÓN DE EJECUCIÓN (Solo si está confirmado) ---
     if confirmado:
-        # --- BOTONES DE EJECUCIÓN Y STOP ---
         if st.button("Generate Prompt and Run", disabled=esta_bloqueado):
             if prompt_final.strip():
-                # 1. Aplicar limpieza de archivos
+                print("Modos de ejecución definidos para borrar CSVs:", modos_ejecucion)
+                
+                # 1. Limpieza de archivos CSV configurados en 'overwrite' y sus JSONL asociados
                 if modos_ejecucion:
-                    for temp, modo in modos_ejecucion.items():
-                        if modo == "overwrite":
-                            out_file = f"results_line_temp{temp}.csv"
-                            output_path = os.path.join(RESULTS_PATH, proveedor, strategy_folder, out_file)
-                            if os.path.exists(output_path):
-                                os.remove(output_path)
+                    for t, info_modo in modos_ejecucion.items():
+                        if info_modo.get('modo') == "overwrite":
+                            output_path = info_modo.get('path') # 'Results/chatgpt/zero-shot/results_batch_temp0.5.csv'
+                            
+                            if output_path:
+                                # Extrae dinámicamente 'Results/chatgpt/zero-shot/'
+                                base_dir = os.path.dirname(output_path)
                                 
-                if batches_a_eliminar:
-                    for item in batches_a_eliminar:
+                                # Construye la ruta al archivo .jsonl usando la temperatura t actual
+                                jsonl_file = f"batch_input_temp{t}.jsonl"
+                                jsonl_path = os.path.join(base_dir, jsonl_file)
+                                
+                                if os.path.exists(jsonl_path):
+                                    os.remove(jsonl_path)
+                                    print(f"JSONL eliminado: {jsonl_path}")
+                                
+                               
+                                if os.path.exists(output_path):
+                                    os.remove(output_path)
+                                    print(f"CSV eliminado: {output_path}")
+                                
+                batches_para_borrar = st.session_state.get("batches_a_eliminar_acumulados", [])
+                print("Batches a eliminar definitivos desde el State:", batches_para_borrar)  
+                             
+                if batches_para_borrar:
+                    for item in batches_para_borrar:
                         batch_id = item["id"]
                         json_path = item["file"]
                         
                         # Eliminar el archivo rowmap del disco
                         if os.path.exists(json_path):
                             os.remove(json_path)
+                            print(f"JSON eliminado: {json_path}")
                             
                         # Eliminar la entrada del JSON de estados (memoria de Streamlit)
-                        # Esto evita que el botón DuplicateKey aparezca
                         _remove_st_batch(proveedor, batch_id)
+                    
+                    # Limpiamos el estado tras la eliminación
+                    st.session_state["batches_a_eliminar_acumulados"] = []
                                 
                 st.session_state.proceso_finalizado = True
-                st.rerun() # Forzamos recarga para que entre en el bloque de procesamiento
+                st.session_state.stop_requested = False 
+                st.rerun()
             else:
                 st.error("The prompt is empty.")
     else:
-        st.info("Please confirm the file management actions to proceed. If you want to change your selections, please adjust the options above and then check the confirmation box.")
-
+        st.info("Please confirm the file management actions to proceed.")
+        
     # --- MOSTRAR RESULTADOS Y PROCESAMIENTO ---
     # si partes no esta empty y el proceso se ha marcado como finalizado, mostramos el prompt y ejecutamos
     if st.session_state.proceso_finalizado:
         # Opcional: Botón para resetear y volver a configurar
-        if st.button("STOP, reset, and Edit Prompt"):
+        if st.button("STOP, reset, and Edit Prompt", type="primary"):
             st.session_state.proceso_finalizado = False
             st.session_state.stop_requested= True
+            st.session_state.batch_status = False
             st.rerun()
-            
+          
         st.subheader("Final Generated Prompt")
         st.code(prompt_final, language="markdown")
         
@@ -317,7 +466,7 @@ def crear_prompt_obtener_resultados(info_llm, df, API_KEY, estrategia):
         # Al estar fuera del 'if button', persistirá aunque hagas clic en descargar.
         if estrategia:
           
-            if "Batch" in processing_mode:
+            if "Batch" in processing_mode: 
                 
                 ejecutar_batch_st(
                     df,
@@ -330,11 +479,12 @@ def crear_prompt_obtener_resultados(info_llm, df, API_KEY, estrategia):
                     game_col=game_col,
                     keep_cols=keep_cols,
                 )
-                if 'proceso_finalizado' not in st.session_state:
-                    st.session_state.proceso_finalizado = False
+
 
             else:
-                st.caption("Processing row by row. To stop, click **⏹ Stop Processing** — it will halt after the current API call finishes.")
+                
+                st.caption("Processing row by row. To stop, click ** STOP, reset, and Edit Prompt ** — it will halt after the current API call finishes.")
+
                 ejecutar_procesamiento_st(
                     df,
                     prompt_final,
@@ -346,8 +496,7 @@ def crear_prompt_obtener_resultados(info_llm, df, API_KEY, estrategia):
                     game_col=game_col,
                     keep_cols=keep_cols,
                 )
-                if 'proceso_finalizado' not in st.session_state:
-                    st.session_state.proceso_finalizado = False
+
 
 
         else:
@@ -360,15 +509,17 @@ def crear_prompt_obtener_resultados(info_llm, df, API_KEY, estrategia):
                 message_col,  
                 API_KEY
             )
-               # 1. Inicializar estados para persistencia
-            if 'proceso_finalizado' not in st.session_state:
-                st.session_state.proceso_finalizado = False
+            
 
-        if st.button("Reset and Edit Prompt"):
+
+        if st.button("Start New Process", type="primary"):
             st.session_state.proceso_finalizado = False
+            st.session_state.batch_status = False
+            st.session_state.stop_requested= True
+
             st.rerun()
 
-def verify_files_existence_json(df, provider, message_col, esta_bloqueado):
+def verify_files_existence_json(df, provider, message_col, esta_bloqueado, temp):
     MIN_APPEND_KEY_OVERLAP = 0.1
     # Usamos un set para evitar duplicados por rutas redundantes
     json_files = set()
@@ -384,14 +535,51 @@ def verify_files_existence_json(df, provider, message_col, esta_bloqueado):
             if file.startswith("rowmap_") and file.endswith(".json"):
                 # .add() en lugar de .append()
                 json_files.add(os.path.join(root, file))
+                
+    # ==================== TU NUEVA LÓGICA DE FILTRADO POR TEMP ====================
+    # Ruta del archivo de estados de los lotes (ajústala si está en otra subcarpeta)
+    batch_status_path = os.path.join(RESULTS_PATH, provider,"batch_status_st.json")
+    
+    if os.path.exists(batch_status_path) and json_files:
+        try:
+            with open(batch_status_path, "r", encoding="utf-8") as f:
+                batch_status_data = json.load(f)
+                print(f"Loaded batch status data: {batch_status_data}")
+            
+            invalidos = set()
+            for json_file in json_files:
+                # Extraer el nombre base del archivo, ej: rowmap_batch_6a0a6d8757d4...json
+                base_name = os.path.basename(json_file)
+                
+                # Reemplazamos 'rowmap_' por '' y quitamos '.json' para obtener 'batch_6a0a6d8757d4...'
+                batch_code = base_name.replace("rowmap_", "").replace(".json", "")
+                
+                print(f"Checking batch code: {batch_code} against temperature {temp}")
+                
+                # Buscamos en el diccionario de estados si existe el lote y validamos su temperatura
+                if batch_code in batch_status_data:
+                    # Forzamos la comparación a float o int según corresponda para evitar errores de tipo
+                    if float(batch_status_data[batch_code].get("temperature", -1)) != float(temp):
+                        invalidos.add(json_file)
+                else:
+                    # Si por alguna razón el lote no está en el registro, podrías decidir descartarlo
+                    invalidos.add(json_file)
+                                
+            # Removemos los que no corresponden a la temperatura seleccionada
+            json_files.difference_update(invalidos)
+            
+        except Exception as e:
+            st.error(f"Error filtering files by temperature: {e}")
+    # ==============================================================================
 
     mensajes_df = set(df[message_col].dropna().astype(str).tolist())
     if not mensajes_df:
         return False, []
     
     hay_solapamiento = False
+    
 
-    # El bucle funciona igual sobre el set
+    # El bucle funciona igual sobre el set disminuido
     for json_file in json_files:
         try:
             with open(json_file, "r", encoding="utf-8") as f:
@@ -429,8 +617,10 @@ def verify_files_existence_json(df, provider, message_col, esta_bloqueado):
         except Exception as e:
             st.error(f"Error checking {json_file}: {e}")
             continue
-            
-    return hay_solapamiento, batches_a_eliminar      
+
+    print(f"batches a eliminar: {batches_a_eliminar}")
+    
+    return hay_solapamiento, batches_a_eliminar
 
 def verify_files_existence(proveedor, strategy_folder, temp, modos_ejecucion, batch_prefix, esta_bloqueado):
     # Definimos el nombre del archivo específico para este prefijo y temperatura
@@ -475,8 +665,11 @@ def configuracion_temperaturas(esta_bloqueado):
 def ejecutar_procesamiento_st(df, prompt, config_llm, temps, message_col, strategy_folder, API_KEY, game_col=None, keep_cols=None):
     
     df_clean = df.dropna(subset=[message_col]).reset_index(drop=True)
+    
     proveedor = config_llm['proveedor']
+    
     model_override = config_llm['modelo']
+    
     keep_cols = keep_cols or []
 
     def enrich_row(parsed, idx, msg):
@@ -486,8 +679,10 @@ def ejecutar_procesamiento_st(df, prompt, config_llm, temps, message_col, strate
             if col in df_clean.columns:
                 parsed[col] = df_clean.at[idx, col]
         return parsed
-
+        
     for temp in temps:
+        
+        
         if st.session_state.get('stop_requested'):
             break
 
@@ -603,8 +798,10 @@ def ejecutar_procesamiento_st(df, prompt, config_llm, temps, message_col, strate
                     break
 
             if rows_buffer:
-                pd.DataFrame(rows_buffer).to_csv(output_path, index=False)
-                mostrar_boton_descarga(rows_buffer, temp, "results")
+                df_clean = pd.DataFrame(rows_buffer)
+                df_clean.to_csv(output_path, index=False)
+                # Convertimos la lista a DataFrame aquí
+                mostrar_boton_descarga(df_clean, temp, "results")
 
 def mostrar_boton_descarga(df_temp, temp, type):
     
@@ -873,117 +1070,119 @@ def ejecutar_batch_st(df, prompt, config_llm, temps, message_col, strategy_folde
 
     # --- INICIO DEL SPINNER / STATUS ---
     with st.status("🚀 Preparing and submitting batches...", expanded=True) as status:
-        for temp in temps:
-            st.write(f"Processing temperature {temp}...")
-            
-            out_file = f"results_batch_temp{temp}.csv"
-            output_path = os.path.join(RESULTS_PATH, proveedor, strategy_folder, out_file)
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        if st.session_state.batch_status == False:
+            for temp in temps:
+                st.write(f"Processing temperature {temp}...")
+                
+                out_file = f"results_batch_temp{temp}.csv"
+                output_path = os.path.join(RESULTS_PATH, proveedor, strategy_folder, out_file)
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-            processed_ids = set()
-            if os.path.exists(output_path):
+                processed_ids = set()
+                if os.path.exists(output_path):
+                    try:
+                        ex = pd.read_csv(output_path)
+                        if "row_id" in ex.columns:
+                            processed_ids = set(int(float(v)) for v in ex["row_id"].dropna())
+                    except Exception: pass
+
+                pending_rows = [
+                    (idx, row[message_col], row.get(game_col, None) if game_col else None)
+                    for idx, row in df_clean.iterrows()
+                    if idx not in processed_ids
+                ]
+
+                if not pending_rows:
+                    st.write(f"✅ Temp {temp}: All rows already processed.")
+                    continue
+
+                temp_token = temp_to_id_token(temp)
+                row_id_map = {}
+                for i, (idx, msg, game) in enumerate(pending_rows):
+                    entry = {
+                        "idx": int(idx),
+                        "message": str(msg),
+                        "game": _to_native(game) if game is not None else None,
+                        "extra": {},
+                    }
+                    for col in keep_cols:
+                        if col in df_clean.columns:
+                            entry["extra"][col] = _to_native(df_clean.at[idx, col])
+                    row_id_map[f"temp{temp_token}_row{i}"] = entry
+
                 try:
-                    ex = pd.read_csv(output_path)
-                    if "row_id" in ex.columns:
-                        processed_ids = set(int(float(v)) for v in ex["row_id"].dropna())
-                except Exception: pass
+                    # --- ENVÍO A LAS APIs ---
+                    if proveedor == "claude":
+                        st.write(f"📤 Uploading batch to Anthropic (Temp {temp})...")
+                        batch_requests = []
+                        for custom_id, entry in row_id_map.items():
+                            user_message = build_classification_user_message(entry["message"], entry["game"])
+                            batch_requests.append({
+                                "custom_id": custom_id,
+                                "params": {
+                                    "model": model_override,
+                                    "max_tokens": CLAUDE_MAX_TOKENS,
+                                    "temperature": temp,
+                                    "system": [{"type": "text", "text": prompt, "cache_control": {"type": "ephemeral"}}],
+                                    "messages": [{"role": "user", "content": user_message}],
+                                },
+                            })
+                        client = get_claude_client(API_KEY)
+                        batch_obj = client.messages.batches.create(requests=batch_requests)
+                        batch_id = batch_obj.id
 
-            pending_rows = [
-                (idx, row[message_col], row.get(game_col, None) if game_col else None)
-                for idx, row in df_clean.iterrows()
-                if idx not in processed_ids
-            ]
+                    else: # chatgpt
+                        st.write(f"📤 Uploading batch to OpenAI (Temp {temp})...")
+                        client = get_openai_batch_client(API_KEY)
+                        batch_lines = []
+                        for custom_id, entry in row_id_map.items():
+                            user_message = build_classification_user_message(entry["message"], entry["game"])
+                            batch_lines.append(json.dumps({
+                                "custom_id": custom_id,
+                                "method": "POST",
+                                "url": "/v1/chat/completions",
+                                "body": {
+                                    "model": model_override,
+                                    "temperature": temp,
+                                    "messages": [
+                                        {"role": "system", "content": prompt},
+                                        {"role": "user", "content": user_message},
+                                    ],
+                                },
+                            }, ensure_ascii=False))
 
-            if not pending_rows:
-                st.write(f"✅ Temp {temp}: All rows already processed.")
-                continue
+                        input_path = os.path.join(RESULTS_PATH, proveedor, strategy_folder, f"batch_input_temp{temp}.jsonl")
+                        with open(input_path, "w", encoding="utf-8") as f:
+                            f.write("\n".join(batch_lines) + "\n")
 
-            temp_token = temp_to_id_token(temp)
-            row_id_map = {}
-            for i, (idx, msg, game) in enumerate(pending_rows):
-                entry = {
-                    "idx": int(idx),
-                    "message": str(msg),
-                    "game": _to_native(game) if game is not None else None,
-                    "extra": {},
-                }
-                for col in keep_cols:
-                    if col in df_clean.columns:
-                        entry["extra"][col] = _to_native(df_clean.at[idx, col])
-                row_id_map[f"temp{temp_token}_row{i}"] = entry
+                        with open(input_path, "rb") as fh:
+                            input_file = client.files.create(file=fh, purpose="batch")
+                        batch_obj = client.batches.create(
+                            input_file_id=input_file.id,
+                            endpoint="/v1/chat/completions",
+                            completion_window="24h",
+                        )
+                        batch_id = batch_obj.id
 
-            try:
-                # --- ENVÍO A LAS APIs ---
-                if proveedor == "claude":
-                    st.write(f"📤 Uploading batch to Anthropic (Temp {temp})...")
-                    batch_requests = []
-                    for custom_id, entry in row_id_map.items():
-                        user_message = build_classification_user_message(entry["message"], entry["game"])
-                        batch_requests.append({
-                            "custom_id": custom_id,
-                            "params": {
-                                "model": model_override,
-                                "max_tokens": CLAUDE_MAX_TOKENS,
-                                "temperature": temp,
-                                "system": [{"type": "text", "text": prompt, "cache_control": {"type": "ephemeral"}}],
-                                "messages": [{"role": "user", "content": user_message}],
-                            },
-                        })
-                    client = get_claude_client(API_KEY)
-                    batch_obj = client.messages.batches.create(requests=batch_requests)
-                    batch_id = batch_obj.id
+                    # Persistencia
+                    with open(_rowmap_path(proveedor, batch_id), "w", encoding="utf-8") as f:
+                        json.dump(row_id_map, f, ensure_ascii=False, indent=2)
 
-                else: # chatgpt
-                    st.write(f"📤 Uploading batch to OpenAI (Temp {temp})...")
-                    client = get_openai_batch_client(API_KEY)
-                    batch_lines = []
-                    for custom_id, entry in row_id_map.items():
-                        user_message = build_classification_user_message(entry["message"], entry["game"])
-                        batch_lines.append(json.dumps({
-                            "custom_id": custom_id,
-                            "method": "POST",
-                            "url": "/v1/chat/completions",
-                            "body": {
-                                "model": model_override,
-                                "temperature": temp,
-                                "messages": [
-                                    {"role": "system", "content": prompt},
-                                    {"role": "user", "content": user_message},
-                                ],
-                            },
-                        }, ensure_ascii=False))
+                    status_data = load_st_batch_status(proveedor)
+                    status_data[batch_id] = {
+                        "batch_id": batch_id, "provider": proveedor, "model": model_override,
+                        "temperature": temp, "strategy": strategy_folder,
+                        "output_path": output_path, "total_rows": len(pending_rows),
+                    }
+                    save_st_batch_status(proveedor, status_data)
+                    submitted.append({"temp": temp, "batch_id": batch_id, "rows": len(pending_rows)})
 
-                    input_path = os.path.join(RESULTS_PATH, proveedor, strategy_folder, f"batch_input_temp{temp}.jsonl")
-                    with open(input_path, "w", encoding="utf-8") as f:
-                        f.write("\n".join(batch_lines) + "\n")
-
-                    with open(input_path, "rb") as fh:
-                        input_file = client.files.create(file=fh, purpose="batch")
-                    batch_obj = client.batches.create(
-                        input_file_id=input_file.id,
-                        endpoint="/v1/chat/completions",
-                        completion_window="24h",
-                    )
-                    batch_id = batch_obj.id
-
-                # Persistencia
-                with open(_rowmap_path(proveedor, batch_id), "w", encoding="utf-8") as f:
-                    json.dump(row_id_map, f, ensure_ascii=False, indent=2)
-
-                status_data = load_st_batch_status(proveedor)
-                status_data[batch_id] = {
-                    "batch_id": batch_id, "provider": proveedor, "model": model_override,
-                    "temperature": temp, "strategy": strategy_folder,
-                    "output_path": output_path, "total_rows": len(pending_rows),
-                }
-                save_st_batch_status(proveedor, status_data)
-                submitted.append({"temp": temp, "batch_id": batch_id, "rows": len(pending_rows)})
-
-            except Exception as e:
-                st.error(f"Temp {temp}: failed — {e}")
+                except Exception as e:
+                    st.error(f"Temp {temp}: failed — {e}")
 
         # Actualizar el título del status al terminar
         status.update(label="✅ Batches Submitted Successfully!", state="complete", expanded=False)
+        st.session_state.batch_status = True
 
     # --- FEEDBACK FINAL ---
     if submitted:
@@ -1004,9 +1203,9 @@ def ejecutar_batch_st(df, prompt, config_llm, temps, message_col, strategy_folde
         # sin perder este mensaje, puedes poner un botón de refresco:
         if st.button("🔄 Refresh List & View Batches"):
             st.session_state.proceso_finalizado = True
+            st.session_state.batch_status = True
             st.rerun()
         
-        # Opcional: st.button("Refresh List", on_click=st.rerun)
 
 # ──────────────────────────────────────────────────────────────
 # BATCH COLLECTION (Streamlit)
@@ -1038,6 +1237,7 @@ def mostrar_estado_batches_st(API_KEY):
             col2.code(batch_id, language=None)
             
             if col3.button("Check & Collect", key=f"collect_{batch_id}", use_container_width=True):
+                st.session_state.batch_status = True
                 _collect_batch_results_st(batch_id, meta, API_KEY)
                                 
 def _collect_batch_results_st(batch_id, meta, API_KEY):
@@ -1169,7 +1369,9 @@ def main():
         st.session_state.proceso_finalizado = False
     if 'stop_requested' not in st.session_state:
         st.session_state.stop_requested = False
-
+    if 'batch_status' not in st.session_state:
+        st.session_state.batch_status = False
+        
     if st.button("Reset / Clear Screen"):
         folder = "Results"
 
@@ -1177,8 +1379,11 @@ def main():
             shutil.rmtree(folder)
 
         os.makedirs(folder)
+        
         st.session_state.proceso_finalizado = False
         st.session_state.stop_requested = False
+        st.session_state.batch_status = False
+        
         st.rerun()
 
     # 1. El usuario sube el archivo
@@ -1207,6 +1412,7 @@ def main():
             menu_st(df, 1)
 
         elif accion == "Assign categories":
+
             st.subheader("Assign categories to csv")
             
             menu_st(df, 2)
@@ -1217,5 +1423,3 @@ def main():
         
 if __name__ == "__main__":   
     main()
-    
-    
