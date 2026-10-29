@@ -4,7 +4,7 @@ import hashlib
 import json
 import math
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 CATALOG_DATE = "2026-10-29"
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
@@ -87,8 +87,17 @@ class GenerationConfig:
                 "app_version": APP_VERSION, "catalog_date": CATALOG_DATE}
 
 
-def request_payload(config, prompt, user_message, temperature=None):
-    """The same payload builder is used for normal requests and batch requests."""
+def request_payload(config, prompt, user_message, temperature=None, *, batch=False, cache_user_message=False):
+    """The same payload builder is used for normal requests and batch requests.
+
+    Prompt caching: the instructions come first and the per-row text last, so the
+    shared prefix can be reused. Claude needs an explicit breakpoint after the system
+    prompt (1 h in batches, which can run longer than the 5 min default; 1 h writes
+    cost more). `cache_user_message` adds a second breakpoint for a large user turn
+    that several requests of the same run reuse. OpenAI caches the prefix
+    automatically; `prompt_cache_key` only routes identical prompts together.
+    Gemini caches implicitly. Prompts below the provider's minimum size are not cached.
+    """
     config.validate(temperature)
     provider = config.spec.provider
     params = {"model": config.model}
@@ -96,10 +105,16 @@ def request_payload(config, prompt, user_message, temperature=None):
         params["temperature"] = temperature
     if provider == "chatgpt":
         params.update(max_completion_tokens=config.max_tokens, reasoning_effort=config.effort,
+                      prompt_cache_key=hashlib.sha256(prompt.encode()).hexdigest()[:32],
                       messages=[{"role": "system", "content": prompt}, {"role": "user", "content": user_message}])
     elif provider == "claude":
-        params.update(max_tokens=config.max_tokens, system=prompt,
-                      messages=[{"role": "user", "content": user_message}], thinking={"type": config.thinking})
+        breakpoint_ = {"type": "ephemeral", **({"ttl": "1h"} if batch else {})}
+        content = user_message
+        if cache_user_message:
+            content = [{"type": "text", "text": user_message, "cache_control": {"type": "ephemeral"}}]
+        params.update(max_tokens=config.max_tokens,
+                      system=[{"type": "text", "text": prompt, "cache_control": breakpoint_}],
+                      messages=[{"role": "user", "content": content}], thinking={"type": config.thinking})
         if config.effort:
             params["output_config"] = {"effort": config.effort}
     else:

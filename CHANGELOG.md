@@ -1,5 +1,40 @@
 # Changelog
 
+## 1.0.1 — 2026-10-29
+
+Restores prompt caching, closes an API-key exposure and fixes interruption,
+batch-status and cost issues found in review of 1.0.0.
+
+### Security
+
+- Environment API keys are no longer sent to the browser as the key field's value.
+  They are used only when the field is empty and `ALLOW_SERVER_KEYS=1` is set
+  (see README). Without that variable, enter the key in the interface.
+
+### Performance and cost
+
+- Restore Claude prompt caching, which the shared request builder had dropped:
+  the instructions are sent as a cacheable system block (1 h lifetime in batches,
+  which can outlive the default 5 minutes and cost more to write). Category creation
+  also caches the messages when several temperatures reuse them.
+- Send an OpenAI `prompt_cache_key` derived from the prompt. Gemini caches shared
+  prefixes implicitly. Prompts shorter than the provider's minimum are not cached.
+- Show how many input tokens were read from the cache after each normal run.
+- Reuse one API client per key instead of one per row.
+- Hash the dataset instead of serializing it on every interface update; rewrite
+  run configuration files only when they change.
+
+### Correctness
+
+- A run interrupted by an interface update is saved and resumes without repeating
+  finished rows; queued Gemini requests are cancelled instead of discarded.
+- Category answers are saved before they are rendered, so an interruption cannot
+  discard a paid answer and repeat the request.
+- A damaged batch tracking file no longer breaks the whole page, and the batch
+  status no longer shows an error after a successful submission.
+- Remove a duplicate CSV write in normal mode; stop tracking compiled bytecode.
+- Add regression tests for all of the above (64 in total).
+
 ## 1.0.0 — 2026-10-29
 
 First numbered release. Updates model configuration and fixes classification

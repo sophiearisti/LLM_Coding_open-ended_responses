@@ -45,6 +45,12 @@ the token limit when reasoning exhausts the budget before a final answer.
   Normal requests stream internally and extract only final text blocks;
   batch requests use the same generation parameters.
 
+Prompt caching: the instructions always precede the per-row text. Claude receives
+the instructions as a `system` block with a cache breakpoint (1 hour in batches).
+OpenAI requests carry a `prompt_cache_key` derived from the prompt, and Gemini
+caches shared prefixes implicitly. Prompts below a provider's minimum size are
+not cached. The app reports cached input tokens after each normal run.
+
 The app exposes a curated set of controls. It does not expose manual legacy
 thinking budgets, tool settings, top-p/top-k, service tiers or provider pricing.
 Gemini batch submission remains outside this release.

@@ -104,6 +104,7 @@ def test_openai_real_sdk_serializes_new_model_and_effort(monkeypatch):
     assert captured[0]["reasoning_effort"] == "low"
     assert "TEXT WITHOUT GAME" in captured[0]["messages"][-1]["content"]
     assert "temperature" not in captured[0]
+    assert captured[0]["prompt_cache_key"] == request_payload(config("gpt-6.1-sol"), "prompt", "x")["prompt_cache_key"]
 
 
 def test_claude_real_sdk_serializes_between_tools():
@@ -130,3 +131,78 @@ def test_parser_handles_json_and_python(text, expected):
 def test_invalid_output_is_not_marked_successful(text):
     with pytest.raises(ValueError):
         v.parse_llm_dict(text)
+
+
+def test_claude_system_prompt_has_cache_breakpoint_and_row_text_stays_after_it():
+    cfg = config("claude-sonnet-5-5")
+    normal = request_payload(cfg, "instructions", "row")
+    assert normal["system"] == [{"type": "text", "text": "instructions", "cache_control": {"type": "ephemeral"}}]
+    assert normal["messages"][0]["content"] == "row"
+    # Batches can outlive the default 5 minute lifetime.
+    assert request_payload(cfg, "instructions", "row", batch=True)["system"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    shared = request_payload(cfg, "instructions", "all messages", cache_user_message=True)
+    assert shared["messages"][0]["content"] == [{"type": "text", "text": "all messages", "cache_control": {"type": "ephemeral"}}]
+
+
+def test_openai_prompt_cache_key_follows_the_prompt():
+    cfg = config("gpt-6.1-sol")
+    key = lambda prompt: request_payload(cfg, prompt, "row")["prompt_cache_key"]
+    assert key("a") == key("a") != key("b")
+
+
+def _sse(events):
+    return "".join(f"event: {e['type']}\ndata: {json.dumps(e)}\n\n" for e in events)
+
+
+@pytest.mark.parametrize("stop_reason, outcome", [("end_turn", '{"label":1}'), ("max_tokens", ValueError)])
+def test_claude_streaming_path_sends_cache_breakpoint_and_reads_usage(monkeypatch, stop_reason, outcome):
+    captured = []
+    def handle(request):
+        captured.append(json.loads(request.content))
+        usage = {"input_tokens": 5, "output_tokens": 1, "cache_read_input_tokens": 3, "cache_creation_input_tokens": 0}
+        body = _sse([
+            {"type": "message_start", "message": {"id": "m", "type": "message", "role": "assistant", "model": "claude-sonnet-5-5",
+                                                  "content": [], "stop_reason": None, "stop_sequence": None, "usage": usage}},
+            {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": '{"label":1}'}},
+            {"type": "content_block_stop", "index": 0},
+            {"type": "message_delta", "delta": {"stop_reason": stop_reason, "stop_sequence": None}, "usage": {"output_tokens": 4}},
+            {"type": "message_stop"}])
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body.encode())
+    client = Anthropic(api_key="fake", http_client=httpx.Client(transport=httpx.MockTransport(handle)))
+    monkeypatch.setattr(v, "get_claude_client", lambda key: client)
+    usage = v.CacheUsage()
+    args = ("instructions", "row text", None, "claude", "fake-key")
+    kwargs = dict(model_override="claude-sonnet-5-5", generation=config("claude-sonnet-5-5"), usage=usage)
+    if outcome is ValueError:
+        with pytest.raises(ValueError, match="token limit"):
+            v.call_llm_for_message(*args, **kwargs)
+    else:
+        assert v.call_llm_for_message(*args, **kwargs) == outcome
+    assert captured[0]["system"][0]["cache_control"] == {"type": "ephemeral"}
+    # Tokens are counted even when the answer is rejected: they were billed.
+    assert (usage.input, usage.cached) == (8, 3)
+    assert "3 of 8" in usage.summary()
+
+
+def test_cache_usage_ignores_missing_usage_fields():
+    usage = v.CacheUsage()
+    usage.record("gemini", object())
+    usage.record("chatgpt", type("R", (), {"usage": None})())
+    assert usage.summary() == ""
+
+
+def test_clients_are_reused_per_key_and_never_across_keys():
+    assert v.get_claude_client("key-a") is v.get_claude_client("key-a")
+    assert v.get_claude_client("key-a") is not v.get_claude_client("key-b")
+    assert v.get_openai_batch_client("key-a") is v.get_openai_batch_client("key-a")
+
+
+def test_dataset_digest_detects_order_values_columns_and_dtypes():
+    import pandas as pd
+    base = pd.DataFrame({"text": ["a", "b"], "n": [1, 2]})
+    digest = v.dataset_digest(base)
+    assert v.dataset_digest(base.copy()) == digest
+    for changed in (base.iloc[::-1].reset_index(drop=True), base.assign(text=["a", "c"]),
+                    base.rename(columns={"n": "m"}), base.assign(n=[1.0, 2.0])):
+        assert v.dataset_digest(changed) != digest

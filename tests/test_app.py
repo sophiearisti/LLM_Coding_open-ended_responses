@@ -1,4 +1,5 @@
 import json
+import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -181,3 +182,87 @@ menu_st(pd.DataFrame({"text":["sample one", "sample two"]}), 2)
     app.run()
     assert not app.exception
     assert call.call_count == 2
+
+
+def test_corrupted_batch_tracking_does_not_break_the_page(ui, tmp_path):
+    Path(v._st_batch_status_path("claude")).write_text("{not json")
+    v.mostrar_estado_batches_st("key", "claude")
+    assert "Cannot read batch tracking" in ui.error.call_args.args[0]
+
+
+def test_batch_status_label_is_not_an_error_on_later_reruns(ui, monkeypatch):
+    api = MagicMock()
+    api.batches.create.return_value.id = "batch-test"
+    api.files.create.return_value.id = "file-test"
+    monkeypatch.setattr(v, "get_openai_batch_client", lambda key: api)
+    status = ui.status.return_value.__enter__.return_value
+    df = pd.DataFrame({"text": ["hello"]})
+    v.ejecutar_batch_st(df, "p", info(), [None], "text", "test", "fake")
+    assert status.update.call_args.kwargs["state"] == "complete"
+    v.ejecutar_batch_st(df, "p", info(), [None], "text", "test", "fake")  # rerun after submission
+    assert status.update.call_args.kwargs["state"] == "complete"
+    assert api.batches.create.call_count == 1
+
+
+def test_batch_failure_still_reports_an_error(ui, monkeypatch):
+    api = MagicMock()
+    api.files.create.side_effect = RuntimeError("boom")
+    monkeypatch.setattr(v, "get_openai_batch_client", lambda key: api)
+    v.ejecutar_batch_st(pd.DataFrame({"text": ["hello"]}), "p", info(), [None], "text", "test", "fake")
+    assert ui.status.return_value.__enter__.return_value.update.call_args.kwargs["state"] == "error"
+
+
+class Interrupt(BaseException):
+    """Stands in for Streamlit's RerunException, which is also a BaseException."""
+
+
+def test_interrupted_run_is_saved_and_resumed_without_repeating_rows(ui, monkeypatch, tmp_path):
+    call = MagicMock(side_effect=['{"label":1}', Interrupt()])
+    monkeypatch.setattr(v, "call_llm_for_message", call)
+    df = pd.DataFrame({"text": ["first", "second", "third"]})
+    with pytest.raises(Interrupt):
+        v.ejecutar_procesamiento_st(df, "p", info(), [0], "text", "test", "fake")
+    assert pd.read_csv(next(tmp_path.rglob("*.csv")))["row_id"].tolist() == [0]
+    call.side_effect = None
+    call.return_value = '{"label":0}'
+    v.ejecutar_procesamiento_st(df, "p", info(), [0], "text", "test", "fake")  # automatic rerun, no new Generate click
+    assert [c.args[1] for c in call.call_args_list] == ["first", "second", "second", "third"]
+    assert pd.read_csv(next(tmp_path.rglob("*.csv")))["row_id"].tolist() == [0, 1, 2]
+
+
+def test_gemini_interrupt_cancels_queued_requests_and_keeps_finished_rows(ui, monkeypatch, tmp_path):
+    started = []
+    def slow_call(*args, **kwargs):
+        started.append(args[1])
+        time.sleep(0.05)
+        return '{"label":1}'
+    monkeypatch.setattr(v, "call_llm_for_message", slow_call)
+    ui.progress.return_value.progress.side_effect = Interrupt()  # the rerun lands on the first progress update
+    df = pd.DataFrame({"text": [f"row {i}" for i in range(40)]})
+    with pytest.raises(Interrupt):
+        v.ejecutar_procesamiento_st(df, "p", info("gemini-3.8-flash", "medium"), [None], "text", "test", "fake")
+    time.sleep(1.0)
+    assert len(started) < 40  # queued requests were cancelled instead of being paid for and discarded
+    assert len(pd.read_csv(next(tmp_path.rglob("*.csv")))) >= 1
+
+
+@pytest.mark.parametrize("temps, expected", [([0], False), ([0, 1], True)])
+def test_categories_cache_the_messages_only_when_temperatures_repeat_them(ui, monkeypatch, temps, expected):
+    call = MagicMock(return_value='{"A":"definition"}')
+    monkeypatch.setattr(v, "call_llm_for_message", call)
+    cfg = info("claude-sonnet-4-6", "high", "disabled")
+    v.ejecutar_procesamiento_crear_st(pd.DataFrame({"text": ["hello"]}), "p", cfg, temps, "text", "fake")
+    assert all(c.kwargs["cache_user_message"] is expected for c in call.call_args_list)
+
+
+def test_category_answer_is_saved_before_rendering_so_an_interrupt_does_not_repeat_the_request(ui, monkeypatch, tmp_path):
+    call = MagicMock(return_value='{"A":"definition"}')
+    monkeypatch.setattr(v, "call_llm_for_message", call)
+    df = pd.DataFrame({"text": ["hello"]})
+    ui.table.side_effect = Interrupt()  # a widget click lands on the first render call
+    with pytest.raises(Interrupt):
+        v.ejecutar_procesamiento_crear_st(df, "p", info("gpt-6-astra", "high"), [None], "text", "fake")
+    assert len(list(tmp_path.rglob("categories_temp*.csv"))) == 1
+    ui.table.side_effect = None
+    v.ejecutar_procesamiento_crear_st(df, "p", info("gpt-6-astra", "high"), [None], "text", "fake")
+    assert call.call_count == 1

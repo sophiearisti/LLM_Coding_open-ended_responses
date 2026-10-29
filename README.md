@@ -1,7 +1,7 @@
 # LLM Coding open-ended responses
 by Daniel Felipe Parra, Sophia Aristizabal Florez
 
-**Version 1.0.0** — see [release notes](CHANGELOG.md) and
+**Version 1.0.1** — see [release notes](CHANGELOG.md) and
 [supported models and configuration rules](docs/model-support.md).
 
 In this repository you will be able to find the code and folders needed to run the tool created for the classification of any open-ended data, in particular one coming from experiments. Although it was used in the paper, any researcher can use this for a similar task.
@@ -95,13 +95,16 @@ Once you run the command, Streamlit will automatically open a new tab in your de
 
 [Chat GPT API](https://help.openai.com/en/articles/4936850-where-do-i-find-my-openai-api-key)
 
-The tool asks for the API key directly in its interface when you select a provider (see step 3 above). You can also store your keys locally in a `.env` file (loaded via `python-dotenv`) using the following variable names:
+The tool asks for the API key directly in its interface when you select a provider (see step 3 above). For a private, local installation you can instead store your keys in a `.env` file (loaded via `python-dotenv`) using the following variable names, and start the app with `ALLOW_SERVER_KEYS=1`:
 
 ```
 OPENAI_API_KEY=your_key_here
 ANTHROPIC_API_KEY=your_key_here
 GOOGLE_API_KEY=your_key_here
+ALLOW_SERVER_KEYS=1
 ```
+
+Keys from the environment are used only when the key field is left empty and `ALLOW_SERVER_KEYS=1` is set. They are never sent to the browser, so do not enable this on a server that other people can use unless they may spend your quota.
 
 ## Results folder
 

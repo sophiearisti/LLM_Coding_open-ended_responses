@@ -3,6 +3,9 @@ import pandas as pd
 import ast
 import re
 import json
+import hashlib
+import threading
+from functools import lru_cache
 from model_config import APP_VERSION, MODELS, GenerationConfig, models_for, request_payload, run_fingerprint
 from pathlib import Path
 from google import genai
@@ -22,8 +25,12 @@ def seleccionar_llm_st():
     spec = MODELS[model]
     names = {"chatgpt": ("OPENAI_API_KEY", "OAI_2"), "gemini": ("GOOGLE_API_KEY", "GEMINI_API_KEY", "GEMINI"),
              "claude": ("ANTHROPIC_API_KEY", "CLAUDE")}
-    default_key = next((os.getenv(name) for name in names[provider] if os.getenv(name)), "")
-    api_key = st.text_input("API key", value=default_key, type="password", key=f"api_key_{provider}", disabled=locked)
+    api_key = st.text_input("API key", type="password", key=f"api_key_{provider}", disabled=locked)
+    # Server-side keys never reach the browser; they are used only if the operator opts in.
+    if not api_key and os.getenv("ALLOW_SERVER_KEYS") == "1":
+        api_key = next((os.getenv(name) for name in names[provider] if os.getenv(name)), "")
+        if api_key:
+            st.caption("Using the server's API key.")
     thinking = ""
     if spec.thinking_modes:
         thinking = st.selectbox("Thinking mode", spec.thinking_modes, key=f"thinking_{model}", disabled=locked)
@@ -328,7 +335,7 @@ def crear_prompt_obtener_resultados(info_llm, df, API_KEY, estrategia, menu_type
     run_label = st.text_input("Run label", value="run-1", disabled=esta_bloqueado,
                              help="Keep the same label to resume. Use a new label for an independent repetition.")
     run_id = run_fingerprint(info_llm["generation"], prompt_final,
-                             df.to_json(orient="split", date_format="iso"), message_col, game_col, keep_cols, run_label)
+                             dataset_digest(df), message_col, game_col, keep_cols, run_label)
     strategy_folder = os.path.join(strategy_folder, info_llm["modelo"], run_id)
     info_llm["run_id"] = run_id
     info_llm["run_folder"] = strategy_folder
@@ -431,7 +438,54 @@ def save_run_manifest(config_llm, temp, output_path):
                     run_label=config_llm.get("run_label", "run-1"))
     path = Path(output_path).with_suffix(".metadata.json")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    text = json.dumps(metadata, ensure_ascii=False, indent=2)
+    if not path.exists() or path.read_text(encoding="utf-8") != text:
+        path.write_text(text, encoding="utf-8")
+
+
+def dataset_digest(df):
+    """Order-, column- and dtype-sensitive digest; far cheaper than serializing the frame on every rerun."""
+    digest = hashlib.sha256(json.dumps([[str(c) for c in df.columns], [str(t) for t in df.dtypes]]).encode())
+    try:
+        digest.update(pd.util.hash_pandas_object(df, index=True).values.tobytes())
+    except TypeError:
+        digest.update(df.to_json(orient="split", date_format="iso").encode())
+    return digest.hexdigest()
+
+
+class CacheUsage:
+    """Prompt-cache token counts for one run; the lock makes it safe across worker threads."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.input = self.cached = self.written = 0
+
+    def record(self, llm, response):
+        try:
+            if llm == "claude":
+                u = response.usage
+                cached, written = u.cache_read_input_tokens or 0, u.cache_creation_input_tokens or 0
+                total = (u.input_tokens or 0) + cached + written
+            elif llm == "chatgpt":
+                u = response.usage
+                total, written = u.prompt_tokens or 0, 0
+                cached = getattr(u.prompt_tokens_details, "cached_tokens", 0) or 0
+            else:
+                u = response.usage_metadata
+                total, written = u.prompt_token_count or 0, 0
+                cached = u.cached_content_token_count or 0
+        except (AttributeError, TypeError):
+            return
+        with self._lock:
+            self.input += total
+            self.cached += cached
+            self.written += written
+
+    def summary(self):
+        if not self.input:
+            return ""
+        text = f"Prompt cache: {self.cached:,} of {self.input:,} input tokens were read from cache"
+        return text + (f"; {self.written:,} written to cache." if self.written else ".")
 
 
 def temperature_label(temp):
@@ -501,7 +555,6 @@ def ejecutar_procesamiento_st(df, prompt, config_llm, temps, message_col, strate
                 if rows_buffer:
                     mostrar_boton_descarga(pd.DataFrame(rows_buffer), temp, "results", output_path)
                 continue
-            attempted.add(output_path)
 
             total_total = len(df_clean)
 
@@ -511,73 +564,85 @@ def ejecutar_procesamiento_st(df, prompt, config_llm, temps, message_col, strate
             else:
                 stopped_early = False
 
-                if proveedor == "gemini":
-                    with ThreadPoolExecutor(max_workers=5) as executor:
-                        futures = {
-                            executor.submit(
-                                call_llm_for_message, prompt, msg, temp, "gemini", API_KEY,
-                                game, model_override, "user", config_llm["generation"]
-                            ): (idx, msg)
-                            for idx, msg, game in pending_rows
-                        }
-                        for i, future in enumerate(as_completed(futures)):
+                usage = CacheUsage()
+                try:
+                    if proveedor == "gemini":
+                        # No `with`: its exit would wait for every queued request (already paid for,
+                        # then discarded) when Streamlit interrupts the script for a rerun.
+                        executor = ThreadPoolExecutor(max_workers=5)
+                        try:
+                            futures = {
+                                executor.submit(
+                                    call_llm_for_message, prompt, msg, temp, "gemini", API_KEY,
+                                    game, model_override, "user", config_llm["generation"], usage=usage
+                                ): (idx, msg)
+                                for idx, msg, game in pending_rows
+                            }
+                            for i, future in enumerate(as_completed(futures)):
+                                if st.session_state.get('stop_requested'):
+                                    stopped_early = True
+                                    break
+                                idx, msg = futures[future]
+                                try:
+                                    ans = future.result()
+                                    parsed = parse_llm_dict(ans)
+                                    rows_buffer.append(enrich_row(parsed, idx, msg))
+                                    if len(rows_buffer) % 10 == 0:
+                                        pd.DataFrame(rows_buffer).to_csv(output_path, index=False)
+                                    completados = len(processed_ids) + i + 1
+                                    bar.progress(completados / total_total)
+                                    status.markdown(f"**Gemini:** `{completados}/{total_total}`")
+                                except Exception as e:
+                                    log_area.error(f"Row {idx}: {e}")
+                        finally:
+                            executor.shutdown(wait=False, cancel_futures=True)
+
+                    elif proveedor == "claude":
+                        for i, (idx, msg, game) in enumerate(pending_rows):
                             if st.session_state.get('stop_requested'):
-                                executor.shutdown(wait=False, cancel_futures=True)
                                 stopped_early = True
                                 break
-                            idx, msg = futures[future]
                             try:
-                                ans = future.result()
+                                ans = call_llm_for_message(
+                                    prompt, msg, temp, "claude", API_KEY, game, model_override, "user", config_llm["generation"],
+                                    usage=usage
+                                )
                                 parsed = parse_llm_dict(ans)
                                 rows_buffer.append(enrich_row(parsed, idx, msg))
-                                if len(rows_buffer) % 10 == 0:
+                                if len(rows_buffer) % 5 == 0:
                                     pd.DataFrame(rows_buffer).to_csv(output_path, index=False)
                                 completados = len(processed_ids) + i + 1
                                 bar.progress(completados / total_total)
-                                status.markdown(f"**Gemini:** `{completados}/{total_total}`")
+                                status.markdown(f"**Claude:** `{completados}/{total_total}`")
                             except Exception as e:
                                 log_area.error(f"Row {idx}: {e}")
 
-                elif proveedor == "claude":
-                    for i, (idx, msg, game) in enumerate(pending_rows):
-                        if st.session_state.get('stop_requested'):
-                            stopped_early = True
-                            break
-                        try:
-                            ans = call_llm_for_message(
-                                prompt, msg, temp, "claude", API_KEY, game, model_override, "user", config_llm["generation"]
-                            )
-                            parsed = parse_llm_dict(ans)
-                            rows_buffer.append(enrich_row(parsed, idx, msg))
-                            if len(rows_buffer) % 5 == 0:
-                                pd.DataFrame(rows_buffer).to_csv(output_path, index=False)
-                            completados = len(processed_ids) + i + 1
-                            bar.progress(completados / total_total)
-                            status.markdown(f"**Claude:** `{completados}/{total_total}`")
-                        except Exception as e:
-                            log_area.error(f"Row {idx}: {e}")
-
-                else:
-                    for i, (idx, msg, game) in enumerate(pending_rows):
-                        if st.session_state.get('stop_requested'):
-                            stopped_early = True
-                            break
-                        try:
-                            ans = call_llm_for_message(
-                                prompt, msg, temp, "chatgpt", API_KEY, game, model_override, "user", config_llm["generation"]
-                            )
-                            parsed = parse_llm_dict(ans)
-                            rows_buffer.append(enrich_row(parsed, idx, msg))
-                            if len(rows_buffer) % 5 == 0:
-                                pd.DataFrame(rows_buffer).to_csv(output_path, index=False)
-                            completados = len(processed_ids) + i + 1
-                            bar.progress(completados / total_total)
-                            status.markdown(f"**GPT:** `{completados}/{total_total}`")
-                        except Exception as e:
-                            log_area.error(f"Row {idx}: {e}")
-
-                if rows_buffer:
-                    pd.DataFrame(rows_buffer).sort_values("row_id").to_csv(output_path, index=False)
+                    else:
+                        for i, (idx, msg, game) in enumerate(pending_rows):
+                            if st.session_state.get('stop_requested'):
+                                stopped_early = True
+                                break
+                            try:
+                                ans = call_llm_for_message(
+                                    prompt, msg, temp, "chatgpt", API_KEY, game, model_override, "user", config_llm["generation"],
+                                    usage=usage
+                                )
+                                parsed = parse_llm_dict(ans)
+                                rows_buffer.append(enrich_row(parsed, idx, msg))
+                                if len(rows_buffer) % 5 == 0:
+                                    pd.DataFrame(rows_buffer).to_csv(output_path, index=False)
+                                completados = len(processed_ids) + i + 1
+                                bar.progress(completados / total_total)
+                                status.markdown(f"**GPT:** `{completados}/{total_total}`")
+                            except Exception as e:
+                                log_area.error(f"Row {idx}: {e}")
+                finally:
+                    # Pure Python: it also runs when Streamlit interrupts the script for a rerun.
+                    if rows_buffer:
+                        pd.DataFrame(rows_buffer).sort_values("row_id").to_csv(output_path, index=False)
+                attempted.add(output_path)
+                if usage.summary():
+                    st.caption(usage.summary())
                 if len(rows_buffer) < total_total:
                     status.warning(f"Saved {len(rows_buffer)} of {total_total} rows. Missing rows remain available to retry.")
 
@@ -586,9 +651,8 @@ def ejecutar_procesamiento_st(df, prompt, config_llm, temps, message_col, strate
                     break
 
             if rows_buffer:
-                df_results = pd.DataFrame(rows_buffer)
-                df_results.to_csv(output_path, index=False)
-                # Convertimos la lista a DataFrame aquí
+                # The sorted file was already written above; only the download needs the frame.
+                df_results = pd.DataFrame(rows_buffer).sort_values("row_id")
                 mostrar_boton_descarga(df_results, temp, "results", output_path)
 
 def mostrar_boton_descarga(df_temp, temp, type, output_path=None):
@@ -625,10 +689,14 @@ def write_rows_to_csv(output_path, rows):
     frame.to_csv(temporary, index=False, encoding="utf-8")
     os.replace(temporary, output_path)
 
+# Clients are cached per API key: one connection pool is reused across rows, and a
+# different key never reuses another key's client. Never close them with `with`.
+@lru_cache(maxsize=8)
 def get_gemini_client(API_KEY):
     return genai.Client(api_key=API_KEY)
 
 
+@lru_cache(maxsize=8)
 def get_claude_client(API_KEY):
     return anthropic.Anthropic(api_key=API_KEY, max_retries=2, timeout=180.0)
 
@@ -648,31 +716,36 @@ def build_classification_user_message(message, game=None):
         f"Message:\n{message}"
     )
 
-def call_llm_for_message(base_prompt, message, temp, llm, API_KEY, game=None, model_override=None, mode="user", generation=None):
+def call_llm_for_message(base_prompt, message, temp, llm, API_KEY, game=None, model_override=None, mode="user", generation=None,
+                         cache_user_message=False, usage=None):
     model = model_override or models_for(llm)[0]
     spec = MODELS[model]
     config = generation or GenerationConfig(model, spec.default_effort, spec.thinking_modes[0] if spec.thinking_modes else "")
     if config.model != model or config.spec.provider != llm:
         raise ValueError("Model and provider configuration do not match.")
     user_prompt = build_classification_user_message(message, game) if mode == "user" else str(message)
-    params = request_payload(config, base_prompt, user_prompt, temp)
+    params = request_payload(config, base_prompt, user_prompt, temp, cache_user_message=cache_user_message)
     if llm == "gemini":
-        with get_gemini_client(API_KEY) as api:
-            response = api.models.generate_content(**params)
+        client = get_gemini_client(API_KEY)  # keep a reference: the SDK client closes itself when collected
+        response = client.models.generate_content(**params)
+        if usage:
+            usage.record(llm, response)
         if response.candidates and str(response.candidates[0].finish_reason).endswith("MAX_TOKENS"):
             raise ValueError("Output token limit reached. Increase the limit or lower reasoning effort.")
         answer = response.text
     elif llm == "claude":
-        with get_claude_client(API_KEY) as api:
-            # Streaming avoids the SDK's non-streaming timeout limit on larger budgets.
-            with api.messages.stream(**params) as stream:
-                response = stream.get_final_message()
+        # Streaming avoids the SDK's non-streaming timeout limit on larger budgets.
+        with get_claude_client(API_KEY).messages.stream(**params) as stream:
+            response = stream.get_final_message()
+        if usage:
+            usage.record(llm, response)
         if response.stop_reason == "max_tokens":
             raise ValueError("Output token limit reached. Increase the limit or lower reasoning effort.")
         answer = extract_claude_text(response)
     else:
-        with get_openai_batch_client(API_KEY) as api:
-            response = api.chat.completions.create(**params)
+        response = get_openai_batch_client(API_KEY).chat.completions.create(**params)
+        if usage:
+            usage.record(llm, response)
         if not response.choices or response.choices[0].finish_reason != "stop":
             raise ValueError("No complete answer. Check the output token limit or provider refusal.")
         answer = response.choices[0].message.content
@@ -714,12 +787,11 @@ def ejecutar_procesamiento_crear_st(df, prompt, config_llm, temps, message_col, 
         with st.container(border=True):
             st.subheader(f"Results with temperature: {temp}")
             
+            proveedor = config_llm['proveedor']
+            category_path = os.path.join(RESULTS_PATH, proveedor, config_llm["run_folder"], f"categories_temp{temp}.csv")
             with st.spinner(f"The LLM is analyzing and categorizing (Temp {temp})..."):
                 try:
                     # 1. Llamada única al LLM
-                    proveedor = config_llm['proveedor']
-                    
-                    category_path = os.path.join(RESULTS_PATH, proveedor, config_llm["run_folder"], f"categories_temp{temp}.csv")
                     if os.path.exists(category_path):
                         res_df = pd.read_csv(category_path)
                         st.table(res_df)
@@ -729,10 +801,12 @@ def ejecutar_procesamiento_crear_st(df, prompt, config_llm, temps, message_col, 
                     if category_path in attempted:
                         st.warning("This request failed. Start a new process to retry.")
                         continue
-                    attempted.add(category_path)
+                    # A second breakpoint on the (large) messages only pays off when several
+                    # temperatures of this run send the same messages.
                     ans = call_llm_for_message(prompt, combined_messages, temp, proveedor, API_KEY,
                                                model_override=config_llm["modelo"], mode="categories",
-                                               generation=config_llm["generation"])
+                                               generation=config_llm["generation"],
+                                               cache_user_message=len(temps) > 1)
 
 
                     # 2. Parsear el resultado (JSON -> Dict/List)
@@ -753,12 +827,14 @@ def ejecutar_procesamiento_crear_st(df, prompt, config_llm, temps, message_col, 
 
                         # RENDERIZADO FINAL
                         if res_df is not None:
-                            # Esto imprimirá la tabla estética en vez del JSON
-                            st.table(res_df) 
-                            
-                            # Botón de descarga usando tu función
+                            # Save before any st.* call: a rerun raised there would otherwise
+                            # discard the paid answer and repeat the request.
                             save_run_manifest(config_llm, temp, category_path)
                             res_df.to_csv(category_path, index=False)
+                            # Esto imprimirá la tabla estética en vez del JSON
+                            st.table(res_df)
+
+                            # Botón de descarga usando tu función
                             mostrar_boton_descarga(res_df, temp, "categories", category_path)
                         else:
                             st.warning("No se pudo estructurar la tabla.")
@@ -766,11 +842,15 @@ def ejecutar_procesamiento_crear_st(df, prompt, config_llm, temps, message_col, 
                         st.warning("The LLM did not return any data or it could not be parsed.")
 
                 except Exception as e:
-                    st.error(f"Error processing temp {temp}: {e}")    
+                    # Only a failed request is remembered; a Streamlit rerun interrupt is a
+                    # BaseException, so an interrupted request is simply retried.
+                    st.session_state.setdefault("attempted_outputs", set()).add(category_path)
+                    st.error(f"Error processing temp {temp}: {e}")
    
 # ──────────────────────────────────────────────────────────────
 # BATCH HELPERS
 # ──────────────────────────────────────────────────────────────
+@lru_cache(maxsize=8)
 def get_openai_batch_client(API_KEY):
     return OpenAI(api_key=API_KEY, max_retries=2, timeout=180.0)
 
@@ -840,6 +920,7 @@ def ejecutar_batch_st(df, prompt, config_llm, temps, message_col, strategy_folde
     keep_cols = keep_cols or []
     df_clean = df.dropna(subset=[message_col]).reset_index(drop=True)
     submitted = []
+    failed = False
 
     # --- INICIO DEL SPINNER / STATUS ---
     with st.status("🚀 Preparing and submitting batches...", expanded=True) as status:
@@ -852,8 +933,13 @@ def ejecutar_batch_st(df, prompt, config_llm, temps, message_col, strategy_folde
                 os.makedirs(os.path.dirname(output_path), exist_ok=True)
                 save_run_manifest(config_llm, temp, output_path)
 
-                previous = [meta for meta in load_st_batch_status(proveedor).values()
-                            if meta.get("output_path") == output_path]
+                try:
+                    previous = [meta for meta in load_st_batch_status(proveedor).values()
+                                if meta.get("output_path") == output_path]
+                except RuntimeError as exc:
+                    failed = True
+                    st.error(str(exc))
+                    continue
                 if previous:
                     st.info("A batch for this exact run is already pending. Collect it below before submitting again.")
                     continue
@@ -899,7 +985,7 @@ def ejecutar_batch_st(df, prompt, config_llm, temps, message_col, strategy_folde
                             user_message = build_classification_user_message(entry["message"], entry["game"])
                             batch_requests.append({
                                 "custom_id": custom_id,
-                                "params": request_payload(config_llm["generation"], prompt, user_message, temp),
+                                "params": request_payload(config_llm["generation"], prompt, user_message, temp, batch=True),
 
                             })
                         client = get_claude_client(API_KEY)
@@ -948,12 +1034,16 @@ def ejecutar_batch_st(df, prompt, config_llm, temps, message_col, strategy_folde
                     submitted.append({"temp": temp, "batch_id": batch_id, "rows": len(pending_rows)})
 
                 except Exception as e:
+                    failed = True
                     st.error(f"Temp {temp}: failed — {e}")
 
-        # Actualizar el título del status al terminar
-        status.update(label="Batch submission finished" if submitted else "No new batches submitted",
-                      state="complete" if submitted else "error", expanded=False)
-        st.session_state.batch_status = True
+            # Actualizar el título del status al terminar
+            status.update(label="Batch submission finished" if submitted else "No new batches submitted",
+                          state="error" if failed else "complete", expanded=False)
+            st.session_state.batch_status = True
+        else:
+            # A later rerun (refresh, download...) must not report a normal state as an error.
+            status.update(label="Batch submission already handled", state="complete", expanded=False)
 
     # --- FEEDBACK FINAL ---
     if submitted:
@@ -984,10 +1074,13 @@ def ejecutar_batch_st(df, prompt, config_llm, temps, message_col, strategy_folde
 
 def mostrar_estado_batches_st(API_KEY, selected_provider):
     all_pending = {}
-    
+
     for provider in (selected_provider,) if selected_provider in ("claude", "chatgpt") else ():
-        for batch_id, meta in load_st_batch_status(provider).items():
-            all_pending[batch_id] = meta
+        try:
+            all_pending.update(load_st_batch_status(provider))
+        except RuntimeError as exc:
+            # Keep the rest of the page usable; submissions stay blocked until the file is restored.
+            st.error(str(exc))
 
     for batch_id, meta in st.session_state.get("collected_batches", {}).items():
         if meta["provider"] == selected_provider and os.path.exists(meta["output_path"]):
