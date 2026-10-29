@@ -360,9 +360,8 @@ After this first step (creating the categories), further instructions will follo
 """
 
 
-gpt_models = ["gpt-5.4-mini", "gpt-5.4", "gpt-5.2"]
-
-gemini_models = ["gemini-3.1-pro-preview", "gemini-3.1-pro-preview-customtools",
-                       "gemini-3-flash-preview", "gemini-3-pro-preview", "gemini-3.1-flash-live-preview"]
-
-claude_models = ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"]
+# Model lists are derived from one shared capability registry.
+from model_config import models_for
+gpt_models = models_for("chatgpt")
+gemini_models = models_for("gemini")
+claude_models = models_for("claude")

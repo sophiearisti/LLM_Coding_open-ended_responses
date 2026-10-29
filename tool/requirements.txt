@@ -1,8 +1,6 @@
 streamlit==1.56.0
 pandas==3.0.1
-langchain-openai==1.1.10
-google-genai==1.64.0
-tqdm==4.67.3
+google-genai==2.30.1
 python-dotenv==1.2.1
 anthropic==0.96.0
 openai==2.24.0
