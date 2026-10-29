@@ -1,0 +1,12 @@
+.venv*/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+.env.*
+!.env.example
+Results/
+tool/Results/
+dist/
+.test-tmp/
+pytest-cache-files-*/
