@@ -1,0 +1,5 @@
+.env
+.venv/
+data/
+resultados/
+__pycache__/
