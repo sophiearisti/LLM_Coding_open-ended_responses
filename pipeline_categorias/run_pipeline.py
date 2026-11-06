@@ -38,6 +38,12 @@ PREGUNTAS = ["Q14", "Q15", "Q16", "Q17", "Q18", "Q21", "Q24", "Q27", "Q30"]
 # Campos "Otro, especifique" (descomenta si los quieres incluir):
 #   "Q09_97_TEXT", "Q09C_97_TEXT", "Q32_97_TEXT"
 
+# Variables que se copian al archivo FINAL para poder cruzar con la base original y analizar por
+# grupo (junto con ResponseId, que es la llave). NO se envían al modelo ni se usan para categorizar.
+# Q02 género, Q03 edad, Q05 tipo de vinculación, Q04 departamento (solo profesores de planta),
+# Q06 años de experiencia, Q07 programas donde enseñó. Excluimos a propósito IPAddress, correo y ubicación.
+COLUMNAS_META = ["StartDate", "EndDate", "Progress", "Finished", "Q02", "Q03", "Q05", "Q04", "Q06", "Q07"]
+
 # El contexto de la encuesta (descripción, situaciones/viñetas de Q18, Q21, Q24 y Q27, lógica de
 # salto y notas por pregunta) vive en contexto_preguntas.json, tomado del cuestionario original.
 # Edítalo ahí; se inyecta en los prompts de crear y de asignar categorías.
@@ -64,6 +70,7 @@ BASE = Path(__file__).resolve().parent
 DATA = BASE / "data"
 RESP_CSV = DATA / "respuestas.csv"
 CODEBOOK_CSV = DATA / "codebook.csv"
+META_CSV = DATA / "metadatos.csv"
 CONTEXTO_JSON = BASE / "contexto_preguntas.json"
 OUT = BASE / "resultados"
 DIR_CAT = OUT / "categorias"
@@ -73,7 +80,7 @@ ESTADO = OUT / "estado.json"
 LOG = OUT / "pipeline.log"
 
 PLACEHOLDERS = {"na", "n/a", "nan", "null", "none", "ns/nr"}
-RESERVADOS = {"texto", "responseid", "estado_clasificacion"}   # nombres de columnas de salida
+RESERVADOS = {"texto", "responseid", "estado_clasificacion"} | {c.lower() for c in COLUMNAS_META}  # columnas de salida
 log = logging.getLogger("pipeline")
 
 
@@ -177,9 +184,14 @@ def preparar(csv_limpio, codebook):
     if faltan:
         sys.exit(f"Columnas no encontradas en el CSV: {faltan}")
     DATA.mkdir(parents=True, exist_ok=True)
+    sin_meta = [c for c in COLUMNAS_META if c not in df.columns]
+    if sin_meta:
+        sys.exit(f"Columnas de COLUMNAS_META no encontradas en el CSV: {sin_meta}")
     df[["ResponseId"] + PREGUNTAS].to_csv(RESP_CSV, index=False, encoding="utf-8-sig")
+    # Aparte de las respuestas: estas columnas nunca llegan a los prompts, solo al archivo final.
+    df[["ResponseId"] + COLUMNAS_META].to_csv(META_CSV, index=False, encoding="utf-8-sig")
     cb[cb["variable"].isin(PREGUNTAS)][["variable", "pregunta"]].to_csv(CODEBOOK_CSV, index=False, encoding="utf-8-sig")
-    print(f"Listo: {RESP_CSV} ({len(df)} filas) y {CODEBOOK_CSV}")
+    print(f"Listo: {RESP_CSV} ({len(df)} filas), {META_CSV} y {CODEBOOK_CSV}")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -496,9 +508,21 @@ def clasificar(client, df, cb, qs, cats_por_q):
 # ──────────────────────────────────────────────────────────────────────────────
 # Exportación
 # ──────────────────────────────────────────────────────────────────────────────
+def cargar_meta(df):
+    """ResponseId + variables de identificación/demográficas (data/metadatos.csv), en el orden de df."""
+    if not META_CSV.exists():
+        log.warning("No existe %s: la salida solo tendrá ResponseId. Corre --preparar para incluir demográficos.", META_CSV)
+        return df[["ResponseId"]].copy()
+    m = pd.read_csv(META_CSV, dtype=str, encoding="utf-8-sig")
+    if not m["ResponseId"].is_unique:
+        raise ValueError("metadatos.csv tiene ResponseId duplicados")
+    return df[["ResponseId"]].merge(m, on="ResponseId", how="left")
+
+
 def exportar(df, cb, qs):
     DIR_CLA.mkdir(parents=True, exist_ok=True)
-    ancho = df[["ResponseId"]].copy()
+    meta = df_seguro(cargar_meta(df))      # ResponseId + demográficos; NO se usa al categorizar
+    ancho = meta.copy()
     resumen = []
     for q in qs:
         info = leer_json(DIR_CAT / f"{q}.json")
@@ -515,7 +539,7 @@ def exportar(df, cb, qs):
             filas.append({"ResponseId": fila.rid, "texto": fila.texto, "estado_clasificacion": estado,
                           **{c: d.get(c) for c in codigos}})
         out = df_seguro(pd.DataFrame(filas))     # texto de participantes: neutraliza fórmulas de Excel
-        out.to_csv(DIR_CLA / f"{q}.csv", index=False, encoding="utf-8-sig")
+        meta.merge(out, on="ResponseId", how="left").to_csv(DIR_CLA / f"{q}.csv", index=False, encoding="utf-8-sig")
         ancho = ancho.merge(out.rename(columns={c: f"{q}__{c}" for c in ["texto", "estado_clasificacion"] + codigos}),
                             on="ResponseId", how="left")
         n_ok = int((out["estado_clasificacion"] == "ok").sum())

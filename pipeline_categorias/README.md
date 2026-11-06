@@ -35,7 +35,9 @@ pip install -r requirements.txt
 python run_pipeline.py --preparar RUTA\Diagnostico_IA_docentes_clean.csv RUTA\Diagnostico_IA_docentes_codebook.csv
 ```
 
-Crea `data/respuestas.csv` con **solo** `ResponseId` + las preguntas abiertas (sin IP, correos ni coordenadas).
+Crea `data/respuestas.csv` (solo `ResponseId` + las preguntas abiertas, lo único que ve el modelo) y `data/metadatos.csv`
+(`ResponseId` + fechas, progreso y demográficos: género, edad, vinculación, departamento, experiencia y programas).
+Nunca se incluyen IP, correos ni ubicación.
 
 ## 4. Correr
 
@@ -66,8 +68,8 @@ completas (`clasificadas N/N`). Los logs están en `resultados/pipeline.log`.
 | Archivo | Contenido |
 |---|---|
 | `categorias/Q*.json` / `.csv` | Libro de códigos (código, nombre, definición, criterios, ejemplo) |
-| `clasificacion/Q*.csv` | `ResponseId`, texto, estado y una columna 0/1 por categoría |
-| `clasificacion_todas_wide.csv` | Todo unido por `ResponseId` (columnas `Q14__codigo`) |
+| `clasificacion/Q*.csv` | `ResponseId` + metadatos (demográficos), texto, estado y una columna 0/1 por categoría |
+| `clasificacion_todas_wide.csv` | Una fila por participante: `ResponseId` + metadatos + todas las preguntas (columnas `Q14__codigo`). `ResponseId` cruza con la base original de Qualtrics |
 | `resumen_categorias.csv` | Frecuencia de cada categoría por pregunta |
 | `clasificacion_raw/Q*.jsonl` | Respuestas crudas del lote (los resultados del Batch expiran a los 29 días) |
 | `manifest_Q*.json` | Modelos, esfuerzo, hash de categorías |
@@ -76,6 +78,7 @@ completas (`clasificadas N/N`). Los logs están en `resultados/pipeline.log`.
 
 ## Supuestos y límites
 
+- **Metadatos en el export:** se controlan con `COLUMNAS_META` en `run_pipeline.py` (no llegan al modelo). Si lo cambias, vuelve a correr `--preparar`.
 - **Multi-etiqueta** por defecto (una respuesta puede tener varias categorías). Cámbialo con `MULTI_ETIQUETA` en `run_pipeline.py`.
 - **Contexto del cuestionario:** `contexto_preguntas.json` (tomado del cuestionario original en Word) describe la encuesta
   y, por pregunta, la sección, quién la vio, las situaciones de Q18/Q21/Q24/Q27 y notas de interpretación. Se inyecta en
