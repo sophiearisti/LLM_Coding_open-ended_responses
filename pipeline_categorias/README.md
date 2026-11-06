@@ -77,6 +77,8 @@ completas (`clasificadas N/N`). Los logs están en `resultados/pipeline.log`.
 ## Supuestos y límites
 
 - **Multi-etiqueta** por defecto (una respuesta puede tener varias categorías). Cámbialo con `MULTI_ETIQUETA` en `run_pipeline.py`.
-- **Q18, Q21, Q24 y Q27** hablan de un caso ("esa situación", "esos 40 trabajos") que no está en el export de Qualtrics.
-  Pega el texto del caso en `CONTEXTO_PREGUNTA` para mejorar las categorías.
+- **Contexto del cuestionario:** `contexto_preguntas.json` (tomado del cuestionario original en Word) describe la encuesta
+  y, por pregunta, la sección, quién la vio, las situaciones de Q18/Q21/Q24/Q27 y notas de interpretación. Se inyecta en
+  los prompts de crear y de asignar categorías. Edítalo ahí si quieres afinar los prompts.
+  Las opciones cerradas de cada situación solo se dan como referencia; el modelo no las usa como categorías por defecto.
 - Si editas un libro de códigos después de clasificar, los resultados anteriores se descartan automáticamente (hash) y se reclasifica.

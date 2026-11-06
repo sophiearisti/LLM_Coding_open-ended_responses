@@ -1,0 +1,50 @@
+{
+  "fuente": "Cuestionario original 'Diagnóstico integración docente IA generativa (definitiva)' (Qualtrics), tal como lo vieron los participantes.",
+  "encuesta": "Diagnóstico sobre la integración de la inteligencia artificial generativa en la docencia de la Facultad de Ciencias Económicas y Administrativas de la Pontificia Universidad Javeriana. Los participantes son profesores de la Facultad (de planta y de cátedra). El objetivo es conocer usos, prácticas y necesidades para orientar acciones de formación y lineamientos de la Facultad. Instrucciones que vieron: la participación es voluntaria; no hay respuestas correctas ni extensión obligatoria; podían responder con frases breves o con ejemplos; interesan sus acciones y las razones de sus decisiones, no la calidad de la redacción; debían relatar solo experiencias reales y no incluir nombres de estudiantes u otras personas; podían usar IA para organizar o pulir su respuesta si las experiencias y decisiones eran propias. Las respuestas están en español (Colombia).",
+  "preguntas": {
+    "Q14": {
+      "seccion": "Sección 4: Experiencias de integración docente (últimos seis meses)",
+      "condicion": "Solo la vieron quienes respondieron Sí a Q12 (usó IA generativa para alguna tarea de su labor docente, como planear clases, preparar materiales, diseñar evaluaciones, analizar trabajos o elaborar retroalimentación).",
+      "notas": "El enunciado pedía indicar la tarea, la herramienta utilizada, lo que le solicitó a la IA y qué hizo con el resultado. Si no tuvo una experiencia que considerara exitosa, podía describir otra experiencia real e indicar sus dificultades; por eso algunas respuestas describen dificultades o experiencias no exitosas."
+    },
+    "Q15": {
+      "seccion": "Sección 4: Experiencias de integración docente (últimos seis meses)",
+      "condicion": "Solo la vieron quienes respondieron Sí a Q12 (usó IA generativa para alguna tarea docente).",
+      "notas": "Se refiere a la experiencia que la persona describió en Q14 (la pregunta anterior). Pedía indicar qué comprobó, qué modificó y cómo decidió utilizar el resultado de la IA; si lo usó sin cambios, debía explicar por qué. Si no respondió Q14, podía referirse a otra experiencia real de los últimos seis meses. Interesa el proceso de revisión y verificación del resultado producido por la IA."
+    },
+    "Q16": {
+      "seccion": "Sección 4: Experiencias de integración docente (últimos seis meses)",
+      "condicion": "Solo la vieron quienes respondieron Sí a Q13 (diseñó o implementó alguna actividad en la que los estudiantes pudieran o debieran utilizar IA generativa).",
+      "notas": "El enunciado pedía indicar el objetivo de aprendizaje, las instrucciones proporcionadas a los estudiantes y cómo evaluó lo que aprendieron. Si la actividad se diseñó pero no se implementó, debía indicarlo y describir lo previsto, sin presentarlo como una experiencia realizada."
+    },
+    "Q17": {
+      "seccion": "Sección 4: Experiencias de integración docente (últimos seis meses)",
+      "condicion": "Solo la vieron quienes respondieron Sí a Q13 (diseñó o implementó una actividad con uso de IA por parte de los estudiantes).",
+      "notas": "Se refiere a la actividad descrita en Q16 (la pregunta anterior). Preguntaba si, además del producto final, solicitó evidencias del proceso seguido por los estudiantes, cuáles y por qué. Si no pidió evidencias adicionales, debía explicar su decisión; si la actividad no se implementó, indicar qué tenía previsto. Si no respondió Q16, podía referirse a otra actividad real de los últimos seis meses."
+    },
+    "Q18": {
+      "seccion": "Sección 5: Situación 1 de 4 (las situaciones se mostraron en orden aleatorio y las preguntas eran opcionales)",
+      "situacion": "Las reglas de un curso exigían declarar el uso de IA. Un estudiante entrega un ensayo cuyo estilo difiere mucho de sus trabajos anteriores y no declaró ningún uso.",
+      "notas": "Pregunta abierta presentada ANTES de las preguntas cerradas de la misma situación. Se pidió responder aunque la persona no hubiera enfrentado exactamente esa situación. Referencia (los participantes las vieron después de responder; no las uses como categorías por defecto, solo para entender el marco): calificar el trabajo tal como fue entregado; conversar con el estudiante y pedirle que explique oralmente su trabajo; pedirle que rehaga el trabajo; asignar una calificación reducida; remitir el caso a la instancia disciplinaria del programa."
+    },
+    "Q21": {
+      "seccion": "Sección 5: Situación 2 de 4 (las situaciones se mostraron en orden aleatorio y las preguntas eran opcionales)",
+      "situacion": "Una herramienta de detección indica que un trabajo fue probablemente generado con IA. No hay otra evidencia sobre cómo se elaboró.",
+      "notas": "Pregunta abierta presentada ANTES de las preguntas cerradas de la misma situación. Se pidió responder aunque la persona no hubiera enfrentado exactamente esa situación. Referencia (vistas después de responder; no las uses como categorías por defecto): considerar el resultado como evidencia suficiente de una falta; usar el resultado como motivo para conversar con el estudiante; pedir a otro profesor una revisión independiente; no tener en cuenta el resultado; evitar el uso de detectores en sus cursos."
+    },
+    "Q24": {
+      "seccion": "Sección 5: Situación 3 de 4 (las situaciones se mostraron en orden aleatorio y las preguntas eran opcionales)",
+      "situacion": "Un profesor con 40 estudiantes usa IA para producir una primera calificación y los comentarios de cada trabajo. Revisa todo antes de publicarlo, pero no informa a los estudiantes que usó IA.",
+      "notas": "Pregunta abierta presentada ANTES de las preguntas cerradas de la misma situación. La pregunta se plantea en primera persona: qué haría la persona si ella tuviera que calificar esos 40 trabajos. Referencia (vistas después de responder; no las uses como categorías por defecto): hacer lo mismo; hacer lo mismo e informar a los estudiantes; usar IA solo para los comentarios y asignar la calificación personalmente; no usar IA para calificar ni para comentar."
+    },
+    "Q27": {
+      "seccion": "Sección 5: Situación 4 de 4 (las situaciones se mostraron en orden aleatorio y las preguntas eran opcionales)",
+      "situacion": "Un profesor quiere generar retroalimentación con IA sobre los ensayos de sus estudiantes. Para hacerlo, sube los ensayos completos, con nombres, a su cuenta personal de una herramienta.",
+      "notas": "Pregunta abierta presentada ANTES de las preguntas cerradas de la misma situación. La pregunta se plantea en primera persona: qué haría la persona si quisiera generar esa retroalimentación con IA. Referencia (vistas después de responder; no las uses como categorías por defecto): subirlos tal como están; retirar nombres y datos identificables antes de subirlos; usar solo una herramienta con licencia institucional; pedir autorización a los estudiantes antes de subirlos; no usar IA para esta tarea."
+    },
+    "Q30": {
+      "seccion": "Sección 6: Aportes a la política de IA",
+      "notas": "Pregunta con dos partes: (a) qué información o lineamientos le gustaría encontrar en una política de IA de la Facultad, y (b) qué decisiones considera que deberían quedar a discreción de cada profesor y por qué. La persona podía responder uno o ambos aspectos, así que una misma respuesta puede tratar ambos."
+    }
+  }
+}

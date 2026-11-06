@@ -38,20 +38,13 @@ PREGUNTAS = ["Q14", "Q15", "Q16", "Q17", "Q18", "Q21", "Q24", "Q27", "Q30"]
 # Campos "Otro, especifique" (descomenta si los quieres incluir):
 #   "Q09_97_TEXT", "Q09C_97_TEXT", "Q32_97_TEXT"
 
-CONTEXTO_ENCUESTA = (
+# El contexto de la encuesta (descripción, situaciones/viñetas de Q18, Q21, Q24 y Q27, lógica de
+# salto y notas por pregunta) vive en contexto_preguntas.json, tomado del cuestionario original.
+# Edítalo ahí; se inyecta en los prompts de crear y de asignar categorías.
+CONTEXTO_ENCUESTA_BASE = (
     "Encuesta diagnóstica a profesores universitarios sobre la integración de la "
     "IA generativa en su docencia (usos, evaluación, decisiones éticas y políticas)."
 )
-
-# Q18, Q21, Q24 y Q27 hacen referencia a un caso/viñeta ("esa situación", "esos 40 trabajos")
-# que NO está en el export de Qualtrics. Pega aquí el texto del caso para mejorar la calidad.
-# Q15 y Q17 se refieren a lo que se respondió en Q14 y Q16.
-CONTEXTO_PREGUNTA = {
-    # "Q18": "Caso presentado a los profesores: ...",
-    # "Q21": "...",
-    # "Q24": "...",
-    # "Q27": "...",
-}
 
 MODELO_CATEGORIAS = "claude-opus-5-5"
 ESFUERZO_CATEGORIAS = "high"          # Opus 5.5 usa "medium" por defecto; lo fijamos explícito
@@ -71,6 +64,7 @@ BASE = Path(__file__).resolve().parent
 DATA = BASE / "data"
 RESP_CSV = DATA / "respuestas.csv"
 CODEBOOK_CSV = DATA / "codebook.csv"
+CONTEXTO_JSON = BASE / "contexto_preguntas.json"
 OUT = BASE / "resultados"
 DIR_CAT = OUT / "categorias"
 DIR_RAW = OUT / "clasificacion_raw"
@@ -191,10 +185,24 @@ def preparar(csv_limpio, codebook):
 # ──────────────────────────────────────────────────────────────────────────────
 # Prompts y esquemas
 # ──────────────────────────────────────────────────────────────────────────────
+def contexto():
+    return leer_json(CONTEXTO_JSON, {}) or {}
+
+
 def bloque_contexto(q, cb):
-    partes = [f"Encuesta: {CONTEXTO_ENCUESTA}", f"Pregunta ({q}): {cb.get(q, q)}"]
-    if CONTEXTO_PREGUNTA.get(q):
-        partes.append(f"Contexto adicional de la pregunta: {CONTEXTO_PREGUNTA[q]}")
+    """Contexto del cuestionario original (contexto_preguntas.json) para la pregunta q."""
+    ctx = contexto()
+    info = (ctx.get("preguntas") or {}).get(q, {})
+    partes = [f"Encuesta: {ctx.get('encuesta') or CONTEXTO_ENCUESTA_BASE}"]
+    if info.get("seccion"):
+        partes.append(f"Sección del cuestionario: {info['seccion']}")
+    if info.get("condicion"):
+        partes.append(f"Quién la vio: {info['condicion']}")
+    if info.get("situacion"):
+        partes.append(f"Situación que se les presentó a los participantes (antes de la pregunta): {info['situacion']}")
+    partes.append(f"Pregunta ({q}), tal como la leyeron los participantes: {cb.get(q, q)}")
+    if info.get("notas"):
+        partes.append(f"Notas para interpretar las respuestas: {info['notas']}")
     return "\n".join(partes)
 
 
@@ -209,6 +217,7 @@ Tu tarea: leer TODAS las respuestas a una pregunta abierta y construir el libro 
 Reglas:
 - No hay número máximo ni mínimo de categorías: crea todas las necesarias para representar fielmente lo que dicen las personas. No fusiones ideas distintas solo para tener menos categorías, ni dividas una misma idea en categorías casi idénticas.
 - Las categorías salen de los datos (enfoque inductivo), no de teorías previas ni de lo que "debería" responderse.
+- Usa el contexto del cuestionario (descripción de la encuesta, situación presentada, quién vio la pregunta, notas) solo para interpretar bien las respuestas. Las categorías deben describir lo que las personas dicen o hacen, no repetir el enunciado ni la situación. Si el contexto menciona opciones cerradas de referencia, no las uses como categorías por defecto: crea una categoría solo si aparece en las respuestas.
 - {regla}
 - Cobertura: toda respuesta con contenido debe poder recibir al menos una categoría. Si aparecen en los datos, incluye categorías para respuestas vagas, de rechazo o fuera de tema (p. ej. "no usa IA", "no sabe").
 - Cada categoría tiene: codigo (snake_case ASCII en minúsculas, único, máx. 30 caracteres), nombre (corto, en español), definicion (1-2 oraciones precisas), criterios_inclusion (cuándo SÍ aplicarla y cuándo NO, para distinguirla de categorías vecinas) y ejemplo (cita literal breve de una respuesta).
@@ -255,7 +264,7 @@ Libro de códigos:
 
 Instrucciones:
 - {regla}
-- Basa tu decisión solo en lo que la respuesta dice, no en lo que podría implicar.
+- Basa tu decisión solo en lo que la respuesta dice, no en lo que podría implicar. El contexto del cuestionario sirve para entender a qué se refiere la respuesta (por ejemplo, la situación presentada), no para añadir categorías que la persona no expresó.
 - Devuelve únicamente el JSON pedido."""
 
 
@@ -538,8 +547,7 @@ def dry_run(df, cb, qs):
         t = tabla_respuestas(df, q)
         n = int(t["valida"].sum())
         total += n
-        aviso = "  ⚠ sin CONTEXTO_PREGUNTA (el caso/viñeta no está en el export)" if q in ("Q18", "Q21", "Q24", "Q27") \
-            and not CONTEXTO_PREGUNTA.get(q) else ""
+        aviso = "" if q in (contexto().get("preguntas") or {}) else "  ⚠ sin contexto en contexto_preguntas.json"
         chars = len(mensaje_descubrir(q, cb, t.loc[t["valida"], "texto"].tolist()))
         print(f"{q}: {n} válidas de {len(t)} | prompt Opus ≈ {chars:,} caracteres{aviso}")
         print(f"     {cb.get(q, '')[:110]}")
