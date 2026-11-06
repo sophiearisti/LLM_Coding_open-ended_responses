@@ -109,6 +109,32 @@ def es_respuesta(texto):
     return len(re.sub(r"[\W_]+", "", s)) >= 2 and s.lower() not in PLACEHOLDERS
 
 
+def linea(valor, maximo):
+    """Una sola línea, sin saltos ni caracteres de control, con largo máximo.
+    Se usa en lo que genera el modelo (categorías) antes de ponerlo en un prompt."""
+    s = re.sub(r"[\x00-\x1f\x7f  ]+", " ", str(valor or ""))
+    return re.sub(r" {2,}", " ", s).strip()[:maximo]
+
+
+def seguro_csv(valor):
+    """Evita inyección de fórmulas al abrir el CSV en Excel/Sheets: antepone ' si empieza
+    con = + @ tab CR, o con '-' pegado a otro carácter (p. ej. '-1+1'; '- texto' queda igual)."""
+    if not isinstance(valor, str) or not valor:
+        return valor
+    if valor[0] in "=+@\t\r" or (valor[0] == "-" and len(valor) > 1 and valor[1] not in " -"):
+        return "'" + valor
+    return valor
+
+
+def df_seguro(df):
+    """Copia del DataFrame con las columnas de texto neutralizadas (solo para CSV de análisis)."""
+    out = df.copy()
+    for col in out.columns:
+        if out[col].dtype == object or str(out[col].dtype).startswith("str"):
+            out[col] = out[col].map(seguro_csv)
+    return out
+
+
 def slug_codigo(texto):
     s = unicodedata.normalize("NFKD", str(texto)).encode("ascii", "ignore").decode()
     s = re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_")
@@ -203,8 +229,10 @@ ESQUEMA_DESCUBRIR = {
 
 
 def libro_codigos(cats):
-    return "\n".join(f"- {c['codigo']} ({c['nombre']}): {c['definicion']} Criterios: {c.get('criterios_inclusion', '')}"
-                     for c in cats)
+    # Los campos los generó un modelo a partir de texto de participantes (y el JSON es editable):
+    # se tratan como datos no confiables → una línea por categoría y largo acotado.
+    return "\n".join(f"- {linea(c['codigo'], 30)} ({linea(c['nombre'], 80)}): {linea(c['definicion'], 600)} "
+                     f"Criterios: {linea(c.get('criterios_inclusion', ''), 800)}" for c in cats)
 
 
 def system_clasificar(q, cb, cats):
@@ -286,7 +314,9 @@ def normalizar_categorias(brutas):
         while cod in vistos or cod in RESERVADOS:
             cod, n = f"{base[:27]}_{n}", n + 1
         vistos.add(cod)
-        cats.append({**c, "codigo": cod})
+        cats.append({"codigo": cod, "nombre": linea(c.get("nombre"), 80), "definicion": linea(c.get("definicion"), 600),
+                     "criterios_inclusion": linea(c.get("criterios_inclusion"), 800),
+                     "ejemplo": linea(c.get("ejemplo"), 300)})
     if not cats:
         raise ValueError("El modelo no devolvió categorías.")
     return cats
@@ -335,7 +365,7 @@ def descubrir(client, df, cb, q):
         "pregunta": q, "texto_pregunta": cb.get(q), "n_respuestas": len(textos), "modelo": MODELO_CATEGORIAS,
         "esfuerzo": ESFUERZO_CATEGORIAS, "creado": ahora(), "hash": hash_categorias(cats),
         "uso": {"input": uso.input_tokens, "output": uso.output_tokens}, "categorias": cats})
-    pd.DataFrame(cats).to_csv(DIR_CAT / f"{q}.csv", index=False, encoding="utf-8-sig")
+    df_seguro(pd.DataFrame(cats)).to_csv(DIR_CAT / f"{q}.csv", index=False, encoding="utf-8-sig")
     log.info("%s: %d categorías creadas", q, len(cats))
     return cats
 
@@ -470,7 +500,7 @@ def exportar(df, cb, qs):
             d = ok.get(fila.custom_id, {})
             filas.append({"ResponseId": fila.rid, "texto": fila.texto, "estado_clasificacion": estado,
                           **{c: d.get(c) for c in codigos}})
-        out = pd.DataFrame(filas)
+        out = df_seguro(pd.DataFrame(filas))     # texto de participantes: neutraliza fórmulas de Excel
         out.to_csv(DIR_CLA / f"{q}.csv", index=False, encoding="utf-8-sig")
         ancho = ancho.merge(out.rename(columns={c: f"{q}__{c}" for c in ["texto", "estado_clasificacion"] + codigos}),
                             on="ResponseId", how="left")
