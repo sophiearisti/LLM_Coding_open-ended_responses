@@ -112,16 +112,21 @@ def es_respuesta(texto):
 def linea(valor, maximo):
     """Una sola línea, sin saltos ni caracteres de control, con largo máximo.
     Se usa en lo que genera el modelo (categorías) antes de ponerlo en un prompt."""
-    s = re.sub(r"[\x00-\x1f\x7f  ]+", " ", str(valor or ""))
-    return re.sub(r" {2,}", " ", s).strip()[:maximo]
+    s = unicodedata.normalize("NFKC", str(valor or ""))
+    s = "".join(" " if unicodedata.category(ch) in ("Cc", "Cf", "Zl", "Zp") else ch for ch in s)
+    return " ".join(s.split())[:maximo]
 
 
 def seguro_csv(valor):
-    """Evita inyección de fórmulas al abrir el CSV en Excel/Sheets: antepone ' si empieza
-    con = + @ tab CR, o con '-' pegado a otro carácter (p. ej. '-1+1'; '- texto' queda igual)."""
+    """Evita inyección de fórmulas al abrir el CSV en Excel/Sheets: antepone ' si el valor
+    empieza (ignorando espacios Unicode iniciales) con = + - @, o con tab/CR/LF.
+    Sin excepciones: un ' de más es inocuo; un '-' sin proteger puede ejecutarse."""
     if not isinstance(valor, str) or not valor:
         return valor
-    if valor[0] in "=+@\t\r" or (valor[0] == "-" and len(valor) > 1 and valor[1] not in " -"):
+    i = 0   # salta espacios Unicode y caracteres invisibles (p. ej. BOM, ancho cero) iniciales
+    while i < len(valor) and (valor[i].isspace() or unicodedata.category(valor[i]) == "Cf"):
+        i += 1
+    if valor[0] in "\t\r\n" or valor[i:i + 1] in ("=", "+", "-", "@"):
         return "'" + valor
     return valor
 
